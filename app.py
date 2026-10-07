@@ -2,7 +2,7 @@ import streamlit as st
 import ccxt
 import pandas as pd
 
-st.set_page_config(page_title="Binance Crypto AI Scanner", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Crypto AI Scanner", layout="wide", page_icon="⚡")
 
 
 @st.cache_resource
@@ -15,23 +15,31 @@ def get_exchange(name):
     })
 
 
-st.title("⚡ Crypto Signals: EMA + RSI + ATR Scanner")
+STABLES = {'USDC', 'FDUSD', 'TUSD', 'USDP', 'DAI', 'EUR', 'AEUR', 'USDE',
+           'PYUSD', 'XUSD', 'BUSD', 'USD1', 'UST', 'USDT'}
 
-col1, col2 = st.columns(2)
-with col1:
-    exchange_name = st.selectbox(
-        "Exchange:", ['binance', 'okx', 'kucoin', 'gateio', 'bybit'], index=0
-    )
-with col2:
-    tf = st.selectbox("Select Timeframe:", ['15m', '1h', '4h', '1d'], index=1)
-
-exchange = get_exchange(exchange_name)
-
-coins_to_scan = [
+MY_LIST = [
     'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'NEAR/USDT', 'BNB/USDT',
     'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'SUI/USDT',
     'LINK/USDT', 'PEPE/USDT', 'FET/USDT', 'RENDER/USDT'
 ]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_all_usdt_pairs(exchange_name):
+    """Exchange lo unna anni USDT pairs + 24h volume (volume batti sorted)."""
+    ex = get_exchange(exchange_name)
+    tickers = ex.fetch_tickers()
+    rows = []
+    for sym, t in tickers.items():
+        if not sym.endswith('/USDT'):
+            continue
+        base = sym.split('/')[0]
+        if base in STABLES:
+            continue
+        rows.append((sym, float(t.get('quoteVolume') or 0)))
+    rows.sort(key=lambda x: x[1], reverse=True)
+    return rows
 
 
 def calc_ema(series, length):
@@ -57,7 +65,7 @@ def calc_atr(high, low, close, length=14):
     return tr.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
 
 
-def analyze_coin(symbol, timeframe):
+def analyze_coin(exchange, symbol, timeframe, volume):
     try:
         bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=80)
         df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
@@ -80,12 +88,12 @@ def analyze_coin(symbol, timeframe):
 
         if ema20 > ema50 and rsi > 52:
             signal = "BUY 🟢"
-            sl = round(close - (1.5 * atr), 4)
-            tp = round(close + (2.5 * atr), 4)
+            sl = round(close - (1.5 * atr), 6)
+            tp = round(close + (2.5 * atr), 6)
         elif ema20 < ema50 and rsi < 48:
             signal = "SELL 🔴"
-            sl = round(close + (1.5 * atr), 4)
-            tp = round(close - (2.5 * atr), 4)
+            sl = round(close + (1.5 * atr), 6)
+            tp = round(close - (2.5 * atr), 6)
 
         return {
             'Coin': symbol,
@@ -93,25 +101,94 @@ def analyze_coin(symbol, timeframe):
             'Signal': signal,
             'RSI': round(rsi, 2) if not pd.isna(rsi) else 50,
             'Stop Loss ($)': sl,
-            'Target ($)': tp
+            'Target ($)': tp,
+            '24h Vol ($M)': round(volume / 1_000_000, 2)
         }, None
     except Exception as e:
         return None, f"{type(e).__name__}: {str(e)[:300]}"
 
 
+st.title("⚡ Crypto Signals: EMA + RSI + ATR Scanner")
+
+c1, c2, c3 = st.columns(3)
+with c1:
+    exchange_name = st.selectbox(
+        "Exchange:", ['binance', 'okx', 'kucoin', 'gateio', 'bybit'], index=0
+    )
+with c2:
+    tf = st.selectbox("Select Timeframe:", ['15m', '1h', '4h', '1d'], index=1)
+with c3:
+    source = st.radio(
+        "Coins:", ["All USDT coins", "Top by volume", "My list (14)"]
+    )
+
+top_n = 50
+if source == "Top by volume":
+    top_n = st.slider("Entha coins (volume batti top):", 10, 200, 50, step=10)
+
+min_vol = 0
+if source == "All USDT coins":
+    min_vol = st.number_input(
+        "Minimum 24h volume ($) — dead/illiquid coins skip cheyadaniki (0 = anni coins):",
+        min_value=0, value=0, step=100000
+    )
+
+exchange = get_exchange(exchange_name)
+
 if st.button("🚀 Scan Coins Now"):
-    with st.spinner(f"{exchange_name} live market data scan chesthundi..."):
-        results = []
-        errors = {}
-        for s in coins_to_scan:
-            res, err = analyze_coin(s, tf)
-            if res:
-                results.append(res)
-            else:
-                errors[s] = err
+    try:
+        all_pairs = get_all_usdt_pairs(exchange_name)
+    except Exception as e:
+        st.error(f"Coin list load kaledhu: {type(e).__name__}: {str(e)[:300]}")
+        st.stop()
+
+    vol_map = dict(all_pairs)
+
+    if source == "All USDT coins":
+        symbols = [s for s, v in all_pairs if v >= min_vol]
+    elif source == "Top by volume":
+        symbols = [s for s, _ in all_pairs[:top_n]]
+    else:
+        symbols = [s for s in MY_LIST if s in vol_map]
+
+    st.write(f"**{exchange_name}** lo {len(symbols)} coins scan avtunnayi...")
+
+    results = []
+    errors = {}
+    progress = st.progress(0.0, text="Scan start avtundi...")
+    for i, s in enumerate(symbols):
+        progress.progress((i + 1) / len(symbols), text=f"{s} ({i + 1}/{len(symbols)})")
+        res, err = analyze_coin(exchange, s, tf, vol_map.get(s, 0))
+        if res:
+            results.append(res)
+        else:
+            errors[s] = err
+    progress.empty()
+
+    st.session_state['results'] = results
+    st.session_state['errors'] = errors
+    st.session_state['total'] = len(symbols)
+    st.session_state['exchange'] = exchange_name
+    st.session_state['tf'] = tf
+
+if 'results' in st.session_state:
+    results = st.session_state['results']
+    errors = st.session_state['errors']
+    total = st.session_state['total']
+
+    only_signals = st.checkbox("Only BUY / SELL chupinchu", value=False)
 
     if results:
-        st.dataframe(pd.DataFrame(results), use_container_width=True)
+        res_df = pd.DataFrame(results)
+        buys = int(res_df['Signal'].str.startswith("BUY").sum())
+        sells = int(res_df['Signal'].str.startswith("SELL").sum())
+        st.caption(
+            f"{st.session_state['exchange']} | {st.session_state['tf']} | "
+            f"{len(results)}/{total} coins scan ayyayi | BUY: {buys} | SELL: {sells}"
+        )
+        if only_signals:
+            res_df = res_df[~res_df['Signal'].str.startswith("WAIT")]
+        st.dataframe(res_df, use_container_width=True, height=600)
     else:
         st.error("Data load kaledhu. Asali error kinda chudandi.")
 
