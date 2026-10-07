@@ -4,15 +4,28 @@ import pandas as pd
 
 st.set_page_config(page_title="Binance Crypto AI Scanner", layout="wide", page_icon="⚡")
 
+
 @st.cache_resource
-def get_exchange():
-    return ccxt.binance({'enableRateLimit': True})
+def get_exchange(name):
+    cls = getattr(ccxt, name)
+    return cls({
+        'enableRateLimit': True,
+        'timeout': 15000,
+        'options': {'defaultType': 'spot', 'fetchCurrencies': False}
+    })
 
-exchange = get_exchange()
 
-st.title("⚡ Binance Crypto Signals: EMA + RSI + ATR Scanner")
+st.title("⚡ Crypto Signals: EMA + RSI + ATR Scanner")
 
-tf = st.selectbox("Select Timeframe:", ['15m', '1h', '4h', '1d'], index=1)
+col1, col2 = st.columns(2)
+with col1:
+    exchange_name = st.selectbox(
+        "Exchange:", ['binance', 'okx', 'kucoin', 'gateio', 'bybit'], index=0
+    )
+with col2:
+    tf = st.selectbox("Select Timeframe:", ['15m', '1h', '4h', '1d'], index=1)
+
+exchange = get_exchange(exchange_name)
 
 coins_to_scan = [
     'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'NEAR/USDT', 'BNB/USDT',
@@ -81,23 +94,36 @@ def analyze_coin(symbol, timeframe):
             'RSI': round(rsi, 2) if not pd.isna(rsi) else 50,
             'Stop Loss ($)': sl,
             'Target ($)': tp
-        }
-    except Exception:
-        return None
+        }, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {str(e)[:300]}"
 
 
 if st.button("🚀 Scan Coins Now"):
-    with st.spinner("Binance live market data scan chesthundi..."):
+    with st.spinner(f"{exchange_name} live market data scan chesthundi..."):
         results = []
+        errors = {}
         for s in coins_to_scan:
-            res = analyze_coin(s, tf)
+            res, err = analyze_coin(s, tf)
             if res:
                 results.append(res)
+            else:
+                errors[s] = err
 
-        if results:
-            res_df = pd.DataFrame(results)
-            st.dataframe(res_df, use_container_width=True)
-        else:
-            st.error("Data load kaledhu, malli try cheyandi.")
+    if results:
+        st.dataframe(pd.DataFrame(results), use_container_width=True)
+    else:
+        st.error("Data load kaledhu. Asali error kinda chudandi.")
+
+    if errors:
+        all_errs = " ".join(errors.values()).lower()
+        if "451" in all_errs or "restricted" in all_errs or "location" in all_errs:
+            st.warning(
+                "Ee exchange mee server location ni block chesthundi "
+                "(Streamlit Cloud US servers). Paina Exchange ni okx / kucoin / gateio ki marchandi."
+            )
+        with st.expander(f"⚠️ {len(errors)} coins fail ayyayi — details"):
+            for coin, e in errors.items():
+                st.write(f"**{coin}** → {e}")
 else:
     st.info("Paina unna '🚀 Scan Coins Now' button click chesi live setups check cheyandi.")
