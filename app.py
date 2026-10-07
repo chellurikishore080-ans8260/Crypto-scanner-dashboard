@@ -1,7 +1,6 @@
 import streamlit as st
 import ccxt
 import pandas as pd
-import pandas_ta as ta
 
 st.set_page_config(page_title="Binance Crypto AI Scanner", layout="wide", page_icon="⚡")
 
@@ -16,32 +15,56 @@ st.title("⚡ Binance Crypto Signals: EMA + RSI + ATR Scanner")
 tf = st.selectbox("Select Timeframe:", ['15m', '1h', '4h', '1d'], index=1)
 
 coins_to_scan = [
-    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'NEAR/USDT', 'BNB/USDT', 
+    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'NEAR/USDT', 'BNB/USDT',
     'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'SUI/USDT',
     'LINK/USDT', 'PEPE/USDT', 'FET/USDT', 'RENDER/USDT'
 ]
+
+
+def calc_ema(series, length):
+    return series.ewm(span=length, adjust=False, min_periods=length).mean()
+
+
+def calc_rsi(series, length=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
+    avg_loss = loss.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def calc_atr(high, low, close, length=14):
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1
+    ).max(axis=1)
+    return tr.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
+
 
 def analyze_coin(symbol, timeframe):
     try:
         bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=80)
         df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-        
-        df['EMA_20'] = ta.ema(df['close'], length=20)
-        df['EMA_50'] = ta.ema(df['close'], length=50)
-        df['RSI'] = ta.rsi(df['close'], length=14)
-        df['ATR'] = ta.atr(df['high'], df['low'], df['close'], length=14)
-        
+
+        df['EMA_20'] = calc_ema(df['close'], 20)
+        df['EMA_50'] = calc_ema(df['close'], 50)
+        df['RSI'] = calc_rsi(df['close'], 14)
+        df['ATR'] = calc_atr(df['high'], df['low'], df['close'], 14)
+
         curr = df.iloc[-1]
         close = curr['close']
         atr = curr['ATR'] if not pd.isna(curr['ATR']) else close * 0.02
         rsi = curr['RSI']
         ema20 = curr['EMA_20']
         ema50 = curr['EMA_50']
-        
+
         signal = "WAIT / NEUTRAL ⚪"
         sl = 0.0
         tp = 0.0
-        
+
         if ema20 > ema50 and rsi > 52:
             signal = "BUY 🟢"
             sl = round(close - (1.5 * atr), 4)
@@ -50,7 +73,7 @@ def analyze_coin(symbol, timeframe):
             signal = "SELL 🔴"
             sl = round(close + (1.5 * atr), 4)
             tp = round(close - (2.5 * atr), 4)
-            
+
         return {
             'Coin': symbol,
             'Price ($)': close,
@@ -59,8 +82,9 @@ def analyze_coin(symbol, timeframe):
             'Stop Loss ($)': sl,
             'Target ($)': tp
         }
-    except:
+    except Exception:
         return None
+
 
 if st.button("🚀 Scan Coins Now"):
     with st.spinner("Binance live market data scan chesthundi..."):
@@ -69,7 +93,7 @@ if st.button("🚀 Scan Coins Now"):
             res = analyze_coin(s, tf)
             if res:
                 results.append(res)
-        
+
         if results:
             res_df = pd.DataFrame(results)
             st.dataframe(res_df, use_container_width=True)
